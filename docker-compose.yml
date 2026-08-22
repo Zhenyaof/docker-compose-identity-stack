@@ -1,0 +1,102 @@
+networks:
+  identity-net:
+    driver: bridge
+
+services:
+
+  # ---------------------------------------------------------------
+  # Postgres - backing database for Keycloak
+  # ---------------------------------------------------------------
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak_password
+    volumes:
+      # Bind mount to a folder INSIDE the project (not Docker's default
+      # volume storage under /var/lib/docker/volumes/...). On Windows
+      # this resolves to a subfolder of your project directory.
+      - ./data/postgres:/var/lib/postgresql/data
+    networks:
+      - identity-net
+    # No ports published to the host -> not reachable/visible from outside,
+    # only Keycloak (via the internal network) can talk to it.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: local        # "local" driver = NOT json-file, satisfies "no JSON logs"
+      options:
+        max-size: "10m"
+        max-file: "20"      # cap total number of rotated log files at 20
+
+  # ---------------------------------------------------------------
+  # Keycloak - identity/auth server, stores its data in Postgres
+  # ---------------------------------------------------------------
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    container_name: keycloak
+    restart: unless-stopped
+    command: >
+      start
+      --hostname-strict=false
+      --http-enabled=true
+      --health-enabled=true
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak_password
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin_password
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "9090:8080"   # ONLY this service is exposed to the host -> only
+                      # the Keycloak login page (http://localhost:9090) is
+                      # visible to the user.
+                      # (Host port 8080 was avoided: Windows had it inside
+                      # a reserved dynamic port exclusion range.)
+    networks:
+      - identity-net
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e 'GET /health/ready HTTP/1.1\r\nhost: localhost\r\nConnection: close\r\n\r\n' >&3 && cat <&3 | grep -Eq '\"status\":[[:space:]]*\"UP\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "20"
+
+  # ---------------------------------------------------------------
+  # Curl - stays up permanently, but only STARTS once both Postgres
+  # and Keycloak report healthy.
+  # ---------------------------------------------------------------
+  curl:
+    image: curlimages/curl:latest
+    container_name: curl-client
+    restart: unless-stopped
+    entrypoint: ["sh", "-c", "while true; do sleep 3600; done"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    networks:
+      - identity-net
+    # No ports published - it's just a permanently-running client container.
+    logging:
+      driver: local
+      options:
+        max-size: "5m"
+        max-file: "20"

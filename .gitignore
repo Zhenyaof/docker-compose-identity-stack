@@ -1,11 +1,8 @@
-# PostgreSQL data
-postgres/data/
+# PostgreSQL persisted data
+data/
 
 # Environment files
 .env
 
 # Logs
 *.log
-
-# Docker volumes
-volume-data/
